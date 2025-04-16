@@ -173,3 +173,8 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Remove the results directories
+results/
+# Remove the data directories
+data/
