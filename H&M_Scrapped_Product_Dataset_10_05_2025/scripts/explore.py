@@ -31,12 +31,14 @@ plot_dir.mkdir(parents=True, exist_ok=True)
 
 # Load the dataset
 csv_path = data_dir / "handm.csv"
-df = pd.read_csv(csv_path, index_col=0)
+df_original = pd.read_csv(csv_path, index_col=0)
+df = df_original.copy()
 df.drop(columns=[
     "brandName", "stockState", "comingSoon", "isOnline",
-    "productId", "url", "colorName"
+    "url", "colorName"
 ], inplace=True, errors='ignore')
 df.dropna(inplace=True)
+df.set_index("productId", inplace=True)
 grab_col_names(df)
 
 # Plot distribution of prices
@@ -255,35 +257,12 @@ materials = df["materials"].str.get_dummies(sep=", ")
 
 df_save = df.copy()
 df_save = df_save[["productCategory", "gender"]]
+df_save = df_save[df_save["productCategory"]!="Other"]
 df_save = pd.get_dummies(df_save, drop_first=True)
 df_save["log_price"] = df["log_price"]
 df_save = pd.concat([df_save, materials], axis=1)
-
-df_save = df_save[df_save["productCategory"]!="Other"]
 df_save = df_save*1
 df_save.to_csv(intermediate_dir / "train_test.csv")
 
 # We can now parse the details for each product
 df["descriptions"] = df["details"].apply(lambda x: x.split("\n")[0])
-
-import fasttext.util
-fasttext.util.download_model('en', if_exists='ignore')
-
-from gensim.models.wrappers import FastText
-
-model = FastText.load_fasttext_format('wiki.simple')
-
-print(model.most_similar('teacher'))
-
-
-
-# Sample sentences
-sentences = [["the", "cat", "sat", "on", "the", "mat"],
-             ["the", "dog", "barked"],
-             ["the", "dog", "sat", "on", "the", "rug"]]
-
-# Train FastText model
-model = FastText(sentences, vector_size=100, window=5, min_count=1, workers=4)
-
-# Get vector for a word
-vector = model.wv['cat']

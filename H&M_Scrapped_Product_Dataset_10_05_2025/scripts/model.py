@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from datetime import datetime
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -22,8 +23,14 @@ pd.set_option('display.float_format', lambda x: '%.3f' % x)
 
 
 class PricePredictionPipeline:
-    def __init__(self, csv_path: Path, top_k_features: int = 400):
+    def __init__(self, 
+                 csv_path: Path, 
+                 tables_dir: Path,
+                 plot_dir: Path,
+                 top_k_features: int = 400):
         self.csv_path = csv_path
+        self.tables_dir = tables_dir
+        self.plot_dir = plot_dir
         self.top_k_features = top_k_features
         self.models = {
             "RandomForest": RandomForestRegressor(n_estimators=100, random_state=42),
@@ -33,14 +40,15 @@ class PricePredictionPipeline:
             "SVR": SVR(kernel='rbf', C=1.0, epsilon=0.1),
             "KNN": KNeighborsRegressor(n_neighbors=5)
         }
+        self.predictions = {}
 
     def load_and_clean_data(self):
-        df = pd.read_csv(self.csv_path, index_col=0)
-        df.dropna(inplace=True)
-        grab_col_names(df)
+        self.df = pd.read_csv(self.csv_path, index_col=0)
+        self.df.dropna(inplace=True)
+        grab_col_names(self.df)
 
-        self.y = df["log_price"]
-        self.x = df.drop(columns="log_price")
+        self.y = self.df["log_price"]
+        self.x = self.df.drop(columns="log_price")
         self.X_selected = self.x
         self.feature_names = self.X_selected.columns
 
@@ -56,11 +64,13 @@ class PricePredictionPipeline:
         for name, model in self.models.items():
             model.fit(self.x_train, self.y_train)
             y_pred = model.predict(self.x_test)
+
             mse = mean_squared_error(self.y_test, y_pred)
             r2 = r2_score(self.y_test, y_pred)
             results[name] = {"MSE": mse, "R2": r2}
 
-            # Save feature importances if available
+            self.predictions[name] = y_pred
+
             if hasattr(model, "feature_importances_"):
                 importances = model.feature_importances_
                 self.feature_importances[name] = pd.Series(importances, index=self.feature_names).sort_values(ascending=False)
@@ -77,17 +87,80 @@ class PricePredictionPipeline:
             plt.tight_layout()
             plt.show()
 
+    def save_true_vs_predicted_table(self, model_name: str, predictions: np.ndarray):
+        now = datetime.now().strftime("%d_%M%S")
+ 
+        pred_df = pd.DataFrame({
+            "true_log_price": self.y_test.values,
+            "predicted_log_price": predictions,
+            "residual": self.y_test.values - predictions
+        })
+        pred_df.index = self.df.index
+
+        csv_path = self.tables_dir / f"true_vs_predicted_{model_name}_{now}.csv"
+        pred_df.to_csv(csv_path, index=False)
+        print(f"📄 Prediction table saved to: {csv_path}")
+
+
+    def save_results_and_plot_best_model(self, results: dict):
+        now = datetime.now().strftime("%d_%M%S")
+        results_df = pd.DataFrame(results).T
+
+        # Save CSV of metrics
+        csv_path = self.tables_dir / f"model_metrics_{now}.csv"
+        results_df.to_csv(csv_path)
+        print(f"\n✅ Results saved to: {csv_path}")
+
+        # Identify best model by lowest MSE
+        best_model = min(results.items(), key=lambda x: x[1]["MSE"])[0]
+        print(f"\n🏆 Best model: {best_model}")
+
+        # Save true vs predicted table
+        self.save_true_vs_predicted_table(best_model, self.predictions[best_model])
+
+        # Plot true vs predicted
+        plt.figure(figsize=(6, 6))
+        sns.scatterplot(x=self.y_test, y=self.predictions[best_model], alpha=0.4)
+        plt.plot([self.y_test.min(), self.y_test.max()],
+                 [self.y_test.min(), self.y_test.max()],
+                 '--', color='red')
+        plt.xlabel("True log_price")
+        plt.ylabel("Predicted log_price")
+        plt.title(f"True vs Predicted - {best_model}")
+        plt.tight_layout()
+        plt.savefig(self.plot_dir / f"true_vs_predicted_{best_model}_{now}.png")
+
+
     def run(self):
         self.load_and_clean_data()
         self.train_test_split()
         results = self.train_and_evaluate_models()
         self.plot_feature_importance()
+        self.save_results_and_plot_best_model(results)
         return results
 
 
 if __name__ == "__main__":
-    file_path = "/Users/adaml9/Private/kaggle/H&M_Scrapped_Product_Dataset_10_05_2025/results/intermediate/2025_04_11/train_test.csv"
-    pipeline = PricePredictionPipeline(csv_path=file_path)    
+    base_path = Path(__file__).parents[1]
+    # Get current date & format to YYYY-MM-DD
+    now = datetime.now()
+    current_date = now.strftime("%Y_%m_%d")
+    # Set the path to the data directory
+    data_dir = base_path / "data"
+    results_dir = base_path / "results"
+    intermediate_dir = results_dir / "intermediate" / current_date
+    tables_dir = results_dir / "tables" / current_date
+    plot_dir = results_dir / "plots" / current_date
+    # Create directories if they don't exist
+    intermediate_dir.mkdir(parents=True, exist_ok=True)
+    tables_dir.mkdir(parents=True, exist_ok=True)
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    file_path = results_dir / "intermediate" / "2025_04_11" / "train_test.csv"
+    pipeline = PricePredictionPipeline(
+        csv_path=file_path,
+        tables_dir=tables_dir,
+        plot_dir=plot_dir
+    )
     results = pipeline.run()
     for model_name, metrics in results.items():
         print(f"\nModel: {model_name}")
