@@ -8,7 +8,7 @@ import warnings
 import datetime
 from sklearn.preprocessing import FunctionTransformer
 from sklearn.pipeline import Pipeline
-from utils import parse_input_data
+from utils import _load_input_data, _custom_transform_data
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 pd.set_option('display.max_columns', None)
@@ -19,6 +19,7 @@ pd.set_option('display.float_format', lambda x: '%.3f' % x)
 now = datetime.datetime.now()
 current_date = now.strftime("%Y_%m_%d")
 
+# Set the base path to the project directory
 base_path = Path(__file__).parents[1]
 # Set the path to the data directory
 data_dir = base_path / "data"
@@ -30,22 +31,23 @@ plot_dir = results_dir / "plots" / current_date
 intermediate_dir.mkdir(parents=True, exist_ok=True)
 tables_dir.mkdir(parents=True, exist_ok=True)
 plot_dir.mkdir(parents=True, exist_ok=True)
-
-base_path = Path(__file__).parents[1]
+# Set the path to the CSV file
 data_dir = base_path / "data"
 csv_path = data_dir / "train.csv"
 
-parse_transformer = FunctionTransformer(func=parse_input_data)
+# Specify transformers
+load_transformer = FunctionTransformer(func=_load_input_data)
 
-pipeline = Pipeline([
-    ('parser', parse_transformer),
-    # Add more steps like imputing, encoding, modeling...
-])
+steps = [('load', load_transformer)]
+pipeline = Pipeline(steps=steps)
 
 # Load the dataset
-df = parse_transformer.transform(csv_path)
+df = pipeline.transform(csv_path)
 # Target variable
 target_var = "Transported"
+
+# ============================================================= #
+# Exploratory Data Analysis (EDA) - Continuous and Categorical Variables
 
 # Plot the distribution of the target variable (Transported)
 plt.figure(figsize=(10, 6))
@@ -58,7 +60,6 @@ plt.savefig(plot_dir / "transported_distribution.png")
 
 # Now we extract all continuous variables 
 # and correlate them with each other 
-
 # Get the list of continuous variables
 continuous_vars = df.select_dtypes(include=[np.number]).columns.tolist()
 
@@ -97,6 +98,10 @@ for var in categorical_vars[1:]:
     plt.grid()
     plt.savefig(plot_dir / f"{var}_by_{target_var}.png")
 
+# Plot cross tabulations of homeplanet and cryosleep
+pd.crosstab(df["HomePlanet"], df["CryoSleep"]).plot(kind='bar', stacked=True)
+pd.crosstab(df["HomePlanet"], df["Transported"]).plot(kind='bar', stacked=True)
+
 # Now we will look at the correlation between the continuous variables and the target variable
 # For that we will plot boxplots of the continuous variables
 for var in continuous_vars:
@@ -107,3 +112,56 @@ for var in continuous_vars:
     plt.ylabel(var)
     plt.grid()
     plt.savefig(plot_dir / f"{var}_by_{target_var}.png")
+
+# ============================================================= #
+# Feature Engineering
+
+# Specify transformers
+load_transformer = FunctionTransformer(func=_load_input_data)
+
+steps = [('load', load_transformer)]
+pipeline = Pipeline(steps=steps)
+
+# Load the dataset
+df = pipeline.transform(csv_path)
+# Target variable
+target_var = "Transported"
+
+# Create a expanses column
+df["Expanses"] = df["RoomService"] + df["FoodCourt"] + df["ShoppingMall"] + df["Spa"] + df["VRDeck"]
+
+# Plot the distribution of the expanses column
+plt.figure(figsize=(10, 6))
+df["Expanses"].plot(kind='hist', bins=50)
+plt.title("Distribution of Expanses")
+plt.xlabel("Expanses")
+plt.ylabel("Count")
+plt.grid()
+plt.savefig(plot_dir / "expanses_distribution.png")
+
+# Log transform the expanses column
+df["Expanses"] = np.log1p(df["Expanses"])
+# Plot the distribution of the log transformed expanses column
+plt.figure(figsize=(10, 6))
+df["Expanses"].plot(kind='hist', bins=50)
+plt.title("Distribution of Log Transformed Expanses")
+plt.xlabel("Log Transformed Expanses")
+plt.ylabel("Count")
+plt.grid()
+plt.savefig(plot_dir / "log_transformed_expanses_distribution.png")
+
+# Now we will look at the correlation between the expanses column and the target variable
+plt.figure(figsize=(10, 6))
+sns.boxplot(x=target_var, y="Expanses", data=df)
+plt.title(f"Boxplot of Expanses by {target_var}")
+plt.xlabel(target_var)
+plt.ylabel("Expanses")
+plt.grid()
+plt.savefig(plot_dir / f"Expanses_by_{target_var}.png")
+
+# ============================================================= #
+# Imputation
+
+from utils import _impute_missing_data
+
+transformer, df_imputed = _impute_missing_data(df, impute="iterative")
