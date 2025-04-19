@@ -68,8 +68,7 @@ sns.pairplot(df[continuous_vars], diag_kind='kde')
 plt.savefig(plot_dir / "pairplot_continuous_variables.png")
 
 # Observing that most variables are exponentially distributed 
-# high zero inflation, we will log transform the variables
-# except for age
+# high zero inflation, we will transform the features except for age
 df[continuous_vars] = df[continuous_vars].apply(lambda x: np.log1p(x) if x.name != "Age" else x)
 
 sns.pairplot(df[continuous_vars], diag_kind='kde')
@@ -159,9 +158,3 @@ plt.ylabel("Expanses")
 plt.grid()
 plt.savefig(plot_dir / f"Expanses_by_{target_var}.png")
 
-# ============================================================= #
-# Imputation
-
-from utils import _impute_missing_data
-
-transformer, df_imputed = _impute_missing_data(df, impute="iterative")

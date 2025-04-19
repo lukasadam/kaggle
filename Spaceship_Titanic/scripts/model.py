@@ -15,20 +15,25 @@ from utils import (_load_input_data,
 
 from xgboost import XGBClassifier
 from sklearn.tree import DecisionTreeClassifier
-from sklearn.ensemble import AdaBoostClassifier, RandomForestClassifier
+from sklearn.ensemble import (AdaBoostClassifier, 
+                              RandomForestClassifier,
+                              BaggingClassifier,
+                              ExtraTreesClassifier,
+                              GradientBoostingClassifier,
+                              HistGradientBoostingClassifier)
+
 from sklearn.linear_model import LogisticRegression
 from sklearn.gaussian_process.kernels import RBF
-from sklearn.inspection import DecisionBoundaryDisplay
-from sklearn.naive_bayes import GaussianNB
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.neural_network import MLPClassifier
-from sklearn.pipeline import make_pipeline
+from lightgbm import LGBMClassifier
+
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.metrics import roc_curve, auc
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import log_loss, accuracy_score
+from sklearn.model_selection import GridSearchCV
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 pd.set_option('display.max_columns', None)
@@ -39,6 +44,7 @@ pd.set_option('display.float_format', lambda x: '%.3f' % x)
 class TransportPredictionPipeline:
     """Pipeline for training and evaluating models for the Spaceship Titanic dataset."""
     def __init__(self, 
+                 intermediate_dir: Path,
                  tables_dir: Path,
                  plot_dir: Path,
                  target_var: str = "Transported",
@@ -50,6 +56,7 @@ class TransportPredictionPipeline:
         :param target_var: Target variable for prediction.
         """
         # Set the directories for saving results and plots
+        self.intermediate_dir = intermediate_dir
         self.tables_dir = tables_dir
         self.plot_dir = plot_dir
         # Initialize the models
@@ -60,7 +67,13 @@ class TransportPredictionPipeline:
             "Decision Tree": DecisionTreeClassifier(max_depth=5, random_state=42),
             "Random Forest": RandomForestClassifier(max_depth=5, n_estimators=10, max_features=1, random_state=42),
             "Logistic Regression": LogisticRegression(random_state=42),
-            "XGBoost": XGBClassifier(eval_metric='logloss', random_state=42),
+            "XGBoost GBLinear": XGBClassifier(booster='gblinear', eval_metric='logloss', random_state=42),
+            "XGBoost GBTrees": XGBClassifier(booster='gbtree', eval_metric='logloss', random_state=42),
+            "LGBM": LGBMClassifier(random_state=42),
+            "AdaBoost": AdaBoostClassifier(random_state=42),
+            "Bagging": BaggingClassifier(random_state=42),
+            "Extra Trees": ExtraTreesClassifier(random_state=42),
+            "Gradient Boosting": GradientBoostingClassifier(random_state=42),
         }
         # Create the pipeline
         self.pipeline = Pipeline([
@@ -84,6 +97,11 @@ class TransportPredictionPipeline:
     ):
         """Load the training and test data from CSV files."""
         self.train_df = self.pipeline.transform(train_csv_path)
+        print(self.train_df.head())
+        # Set all categorical features
+        self.cat_features = self.train_df.select_dtypes(include=[object]).columns.tolist()
+        # Set all numerical features
+        self.num_features = self.train_df.select_dtypes(include=[np.number]).columns.tolist()
         # train_df = train_df[["HomePlanet", "Destination", "Transported"]]
         self.test_df = self.pipeline.transform(test_csv_path)
     
@@ -91,10 +109,16 @@ class TransportPredictionPipeline:
         self,
         one_hot_encode: bool = True,
         normalize: bool = True,
-        impute: str = "knn",
+        strategy: dict = None,
         feature_selection: bool = False
     ):
         """Prepare the data for training and testing."""
+        # Impute missing values (or drop)
+        self.train_df = self.impute_missing_data(self.train_df, 
+                                                 target_var=self.target_var, 
+                                                 cat_features=self.cat_features,
+                                                 num_features=self.num_features,
+                                                 strategy=strategy)
         if one_hot_encode:
             # One-hot encode categorical variables
             self.train_df = self.encode_one_hot(self.train_df)
@@ -102,64 +126,69 @@ class TransportPredictionPipeline:
         if normalize:
             # Normalize input data
             self.train_df = self.normalize_input_data(self.train_df, train=True)
-        # Impute missing values (or drop)
-        self.train_df = self.impute_missing_data(self.train_df, 
-                                                 target_var=self.target_var, 
-                                                 impute=impute)
+            self.test_df = self.normalize_input_data(self.test_df, train=False)
         if feature_selection:
             # Feature selection
             self.train_df = self.feature_selection(self.train_df, target_var=self.target_var)
+            self.test_df = self.test_df[self.train_df.columns.tolist()]
         self.x_train = self.train_df.drop(columns=[self.target_var])
         self.x_test = self.test_df.copy()
         self.y_train = self.train_df[self.target_var]
+        # Save final list of feature columns
+        self.feature_columns = self.x_train.columns.tolist()
 
     def encode_one_hot(self, df: pd.DataFrame):
         # One-hot encode categorical variables
-        categorical_vars = df.select_dtypes(include=[object]).columns.tolist()
-        df_onehot = _onehot_encode_input_data(df, categorical_vars)
+        df_onehot = _onehot_encode_input_data(df, self.cat_features)
         return df_onehot
     
     def normalize_input_data(self, df: pd.DataFrame, train=True):
         # Fit the scaler on the training data
-        continuous_vars = df.select_dtypes(include=[np.number]).columns.tolist()
         if train:
             # Fit the scaler on the training data
-            self.scaler.fit(df[continuous_vars])
+            self.scaler.fit(df[self.num_features])
         # Normalize the training data
-        df[continuous_vars] = self.scaler.transform(df[continuous_vars])
+        df[self.num_features] = self.scaler.transform(df[self.num_features])
         return df
     
-    def impute_missing_data(self, df: pd.DataFrame, target_var: str, impute: str = "knn"):
+    def impute_missing_data(self, df: pd.DataFrame, 
+                            target_var: str, 
+                            cat_features: list,
+                            num_features: list,
+                            strategy: dict = None):
         # Impute missing values 
-        _, df = _impute_missing_data(df, target_var=target_var, impute=impute)
+        _, df = _impute_missing_data(df, 
+                                     target_var=target_var, 
+                                     cat_feat=cat_features,
+                                     num_feat=num_features,
+                                     strategy=strategy)
         return df
     
     def train_test_split(self):
+        # Perform train-test split
         self.x_train, self.x_val, self.y_train, self.y_val = train_test_split(
             self.x_train, self.y_train, test_size=0.2, random_state=42
         )
-        self.feature_columns = self.x_train.columns.tolist()
         self.sample_ids = self.x_val.index.tolist()
         print(f"Train shape: {self.x_train.shape}, Validation shape: {self.x_val.shape}")
         print(f"Train target shape: {self.y_train.shape}, Validation target shape: {self.y_val.shape}")
         # Print length of feature columns and sample ids
         print(f"Feature columns length: {len(self.feature_columns)}")
         print(f"Sample ids length: {len(self.sample_ids)}")
+        # Save final x_train in intermediate directory
+        self.x_train.to_csv(self.intermediate_dir / "x_train.csv", index=True)
+        # Save final x_val in intermediate directory
+        self.x_val.to_csv(self.intermediate_dir / "x_val.csv", index=True)
+        # Save final x_test in intermediate directory
+        self.x_test.to_csv(self.intermediate_dir / "x_test.csv", index=True)
 
-    def feature_selection(self, df: pd.DataFrame, target_var: str):
-        from sklearn.feature_selection import SelectKBest, chi2
-
-        # Apply SelectKBest with chi2
-        select_k_best = SelectKBest(score_func=chi2, k=10)
-        # Subset to X and y
-        X = df.drop(columns=[target_var])
-        y = df[target_var]
-        X_k_best = select_k_best.fit_transform(X, y)
-        # Add y back to the DataFrame
-        df_best = pd.DataFrame(X_k_best, columns=X.columns[select_k_best.get_support()], index=X.index)
-        # Add target variable back to the DataFrame
-        df_best[target_var] = y
-        return df_best
+    # TODO: Implement feature augmentation
+    def feature_augmentation(self):
+        pass
+    
+    # TODO: Implement feature selection
+    def feature_selection(self):
+        pass
 
     def train_and_evaluate_models(self):
         results = {}
@@ -189,8 +218,7 @@ class TransportPredictionPipeline:
 
             if hasattr(model, "feature_importances_"):
                 importances = model.feature_importances_
-                self.feature_importances[name] = pd.Series(importances, index=self.feature_columns).sort_values(ascending=False)
-
+                self.feature_importances[name] = pd.Series(importances, index=self.x_train.columns).sort_values(ascending=False)
         return results
 
     def plot_feature_importance(self, top_n: int = 20):
@@ -256,8 +284,6 @@ class TransportPredictionPipeline:
         plt.savefig(self.plot_dir / f"roc_curve_{best_model}_{now}.png")
 
     def grid_search_best_model(self, model_name: str):
-        # Perform grid search for the best model
-        from sklearn.model_selection import GridSearchCV
         # Define the parameter grid for the model
         param_grid = {
             'n_estimators': list(range(50, 200, 50)),
@@ -278,8 +304,24 @@ class TransportPredictionPipeline:
         best_model = grid_search.best_estimator_
         # Print the best parameters and score
         print(f"Best parameters: {best_params}")
-        print(f"Best score: {best_score:.4f}")
+        print(f"Best score: {best_score:.4f}")   
         return best_model
+    
+    def make_predictions(self, model):
+        # Make predictions on the test data
+        y_pred = model.predict(self.x_test)
+        # Save predictions to CSV
+        pred_df = pd.DataFrame({
+            "PassengerId": self.test_df.index,
+            "Transported": y_pred
+        })
+        # Convert the transported predictions to boolean
+        pred_df["Transported"] = pred_df["Transported"].astype(bool)
+        # Save the predictions to a CSV file
+        pred_csv_path = self.tables_dir / f"predictions_test_set.csv"
+        pred_df.to_csv(pred_csv_path, index=False)
+        print(f"Predictions saved to: {pred_csv_path}")
+        return pred_df
 
 
 if __name__ == "__main__":
@@ -302,6 +344,7 @@ if __name__ == "__main__":
     test_csv_path = data_dir / "test.csv"
     # Create the pipeline
     prediction_pipeline = TransportPredictionPipeline(
+        intermediate_dir,
         tables_dir, 
         plot_dir,
         target_var="Transported"
@@ -310,19 +353,24 @@ if __name__ == "__main__":
     prediction_pipeline.prepare_data(
         one_hot_encode=True,
         normalize=True,
-        impute="iterative",
+        strategy={
+            "categorical": "simple",
+            "numerical": "iterative"
+        },
         feature_selection=False
     )
     prediction_pipeline.train_test_split()
     # Train and evaluate models
-    #results = prediction_pipeline.train_and_evaluate_models()
-    #for model_name, metrics in results.items():
-    #    print(f"\nModel: {model_name}")
-    #    for metric, value in metrics.items():
-    #        if "CV" not in metric:
-    #            print(f"{metric}: {value:.4f}")
-    #prediction_pipeline.save_results_and_plot_best_model(results)
+    results = prediction_pipeline.train_and_evaluate_models()
+    for model_name, metrics in results.items():
+        print(f"\nModel: {model_name}")
+        for metric, value in metrics.items():
+            if "CV" not in metric:
+                print(f"{metric}: {value:.4f}")
+    prediction_pipeline.save_results_and_plot_best_model(results)
 
     # Choose the best model based on the results (AUROC and perform grid search)
-    grid_search_best_model = prediction_pipeline.grid_search_best_model("XGBoost")
-
+    #grid_search_best_model = prediction_pipeline.grid_search_best_model("LGBM")
+    # Make predictions on the test data
+    #predictions = prediction_pipeline.make_predictions(grid_search_best_model)
+    #print(predictions.head())
