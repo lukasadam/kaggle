@@ -26,6 +26,7 @@ from sklearn.ensemble import (AdaBoostRegressor,
 from sklearn.linear_model import LinearRegression
 from sklearn.neighbors import KNeighborsRegressor
 from lightgbm import LGBMRegressor
+from autogluon.tabular import TabularDataset, TabularPredictor
 
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVR
@@ -110,7 +111,6 @@ class PricePredictionPipeline:
         # Remove the target variable from the numerical features
         if self.target_var in self.num_features:
             self.num_features.remove(self.target_var)
-        # train_df = train_df[["HomePlanet", "Destination", "Transported"]]
         self.test_df = self.pipeline.transform(test_csv_path)
     
     def prepare_data(
@@ -129,8 +129,8 @@ class PricePredictionPipeline:
                                                  strategy=strategy)
         if one_hot_encode:
             # One-hot encode categorical variables
-            self.train_df = self.encode_one_hot(self.train_df)
-            self.test_df = self.encode_one_hot(self.test_df)
+            self.train_df = self.encode_one_hot(self.train_df, train=True)
+            self.test_df = self.encode_one_hot(self.test_df, train=False)
         if normalize:
             # Normalize input data
             self.train_df = self.normalize_input_data(self.train_df, train=True)
@@ -145,9 +145,21 @@ class PricePredictionPipeline:
         # Save final list of feature columns
         self.feature_columns = self.x_train.columns.tolist()
 
-    def encode_one_hot(self, df: pd.DataFrame):
-        # One-hot encode categorical variables
-        df_onehot = _onehot_encode_input_data(df, self.cat_features)
+    def encode_one_hot(self, df: pd.DataFrame, train=True):
+        # Perform one-hot encoding on categorical columns
+        df_onehot = pd.get_dummies(df, columns=self.cat_features, drop_first=False)
+
+        if train:
+            # When fitting on train set, store column names
+            self.onehot_columns = df_onehot.columns
+        else:
+            # Align test columns with train columns
+            for col in self.onehot_columns:
+                if col not in df_onehot:
+                    df_onehot[col] = False  # Add missing columns with 0s
+            df_onehot = df_onehot[self.onehot_columns]
+            # Remove target var column
+            df_onehot.drop(columns=[self.target_var], inplace=True)
         return df_onehot
     
     def normalize_input_data(self, df: pd.DataFrame, train=True):
@@ -198,6 +210,22 @@ class PricePredictionPipeline:
     def feature_selection(self):
         pass
 
+    def train_models(self):
+        """Train the models on the training data using AutoGluon."""
+        
+        # First we assemble the df using self.x_train & self.y_train
+        train_data = self.x_train.copy()
+        train_data[self.target_var] = self.y_train
+
+        # Specify output path
+        output_path = self.intermediate_dir / "autogluon_output" 
+
+        self.predictor = TabularPredictor(label=self.target_var, 
+                                          eval_metric="rmse",
+                                          problem_type="regression",
+                                          path=output_path)
+        self.predictor.fit(train_data)
+                                        
     def train_and_evaluate_models(self):
         results = {}
         self.feature_importances = {}
@@ -217,30 +245,22 @@ class PricePredictionPipeline:
             # Compute explained variance
             evs = explained_variance_score(self.y_val, y_pred)
             # RMSE on the original values
-            a, b = np.exp(self.y_val), np.exp(y_pred)
-            rmse = np.sqrt(mean_squared_error(a, b))
+            rmse = np.sqrt(mean_squared_error(np.expm1(self.y_val), np.expm1(y_pred)))
             results[name] = {"MSE": mse,
                              "RMSE": rmse,
                              "MAE": mae,
                              "Explained Variance": evs}
                              #"CV MSE": np.mean(cv_results),
                              #"CV Std": np.std(cv_results)}
+            # Save predictions
             self.predictions[name] = y_pred
+            # Save model
+            self.models[name] = model
 
             if hasattr(model, "feature_importances_"):
                 importances = model.feature_importances_
                 self.feature_importances[name] = pd.Series(importances, index=self.x_train.columns).sort_values(ascending=False)
         return results
-
-    def plot_feature_importance(self, top_n: int = 20):
-        for model_name, importances in self.feature_importances.items():
-            top_features = importances.head(top_n)
-            plt.figure(figsize=(10, 6))
-            sns.barplot(x=top_features.values, y=top_features.index)
-            plt.title(f"Top {top_n} Feature Importances - {model_name}")
-            plt.xlabel("Importance")
-            plt.tight_layout()
-            plt.show()
 
     def save_true_vs_predicted_table(self, model_name: str, predictions: np.ndarray):
         now = datetime.now().strftime("%d_%M%S")
@@ -294,7 +314,7 @@ class PricePredictionPipeline:
         # Create the model
         model = self.models[model_name]
         # Create the grid search object
-        grid_search = GridSearchCV(model, param_grid, cv=self.skf, scoring='accuracy', n_jobs=-1)
+        grid_search = GridSearchCV(model, param_grid, cv=self.kf, scoring='neg_mean_squared_error', n_jobs=-1)
         # Fit the grid search
         grid_search.fit(self.x_train, self.y_train)
         # Get the best parameters
@@ -314,7 +334,7 @@ class PricePredictionPipeline:
         # Save predictions to CSV
         pred_df = pd.DataFrame({
             "id": self.test_df.index,
-            "price": y_pred
+            "price": np.expm1(y_pred)
         })
         # Save the predictions to a CSV file
         pred_csv_path = self.tables_dir / f"predictions_test_set.csv"
@@ -359,6 +379,8 @@ if __name__ == "__main__":
         feature_selection=False
     )
     prediction_pipeline.train_test_split()
+    prediction_pipeline.train_models()
+    """
     # Train and evaluate models
     results = prediction_pipeline.train_and_evaluate_models()
     for model_name, metrics in results.items():
@@ -366,9 +388,11 @@ if __name__ == "__main__":
         for metric, value in metrics.items():
             print(f"{metric}: {value:.4f}")
     prediction_pipeline.save_results_and_plot_best_model(results)
-
+    
     # Choose the best model based on the results (AUROC and perform grid search)
-    #grid_search_best_model = prediction_pipeline.grid_search_best_model("LGBM")
+    #grid_search_best_model = prediction_pipeline.grid_search_best_model("XGBoost GBTrees")
     # Make predictions on the test data
-    #predictions = prediction_pipeline.make_predictions(grid_search_best_model)
-    #print(predictions.head())
+    grid_search_best_model = prediction_pipeline.models["XGBoost GBTrees"]
+    predictions = prediction_pipeline.make_predictions(grid_search_best_model)
+    print(predictions.head())
+    """

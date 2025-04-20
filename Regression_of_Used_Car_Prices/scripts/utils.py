@@ -19,7 +19,7 @@ def _load_input_data(csv_path: Path) -> pd.DataFrame:
     # Load dataset
     df = pd.read_csv(csv_path, index_col=0)
     return df
-
+    
 def _custom_transform_data(df: pd.DataFrame) -> pd.DataFrame:
     """Custom transformations on the DataFrame.
     
@@ -31,13 +31,18 @@ def _custom_transform_data(df: pd.DataFrame) -> pd.DataFrame:
     df["engine"] = df["engine"].str.replace("–", "U")
     # Format transmission
     df["transmission"] = df["transmission"].str.replace("–", "U")
-    # Extract whether (A/T) vs (M/T) from the transmission column
+    # Define regex pattern to match A/T, M/T, automatic, manual (case-insensitive)
+    pattern = r'\b(A/T|M/T|automatic|manual)\b'
+    # Extract and normalize
+    df["transmission_type"] = df["transmission"].str.extract(pattern, expand=False).str.lower()
+    # Optional: map to friendly labels
     transmission_map = {
-        "A/T": "Automatic",
-        "M/T": "Manual"   
+        "a/t": "Automatic",
+        "automatic": "Automatic",
+        "m/t": "Manual",
+        "manual": "Manual"
     }
-    # Extract the substring (A/T) or (M/T) from the transmission column
-    df["transmission_type"] = df["transmission"].str.extract(r'\b([AM]/T)\b', expand=False).map(transmission_map)
+    df["transmission_type"] = df["transmission_type"].map(transmission_map)
     df["transmission_type"] = df["transmission_type"].fillna("U")
     # Extract transmission speed ( X-Speed ) from the transmission column
     df["transmission_speed"] = df["transmission"].str.extract(r'(\d+)\s*-Speed', expand=False)
@@ -58,6 +63,9 @@ def _custom_transform_data(df: pd.DataFrame) -> pd.DataFrame:
     df["engine_hp"] = df["engine_hp"].astype(float)
     # Set all NaN values to 0
     df["engine_hp"] = df["engine_hp"].fillna(0)
+    #  Extract whether GDI/PDI/Turbo from the engine column
+    df["engine_gdi"] = df["engine"].str.extract(r'(\bGDI\b|\bPDI\b|\bTurbo\b)', expand=False)
+    df["engine_gdi"] = df["engine_gdi"].fillna("U")
     # Extract number of cylinders
     df["engine_cylinders"] = df["engine"].str.extract(r'(\d+)\s*Cyl', expand=False)
     # Convert the engine cylinders to a float
@@ -76,8 +84,9 @@ def _custom_transform_data(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(by="model_year")
     # Convert the model year to a numeric value
     df["model_year"] = df["model_year"].dt.year
+    #
     # Drop columns
-    df.drop(columns=["engine", "transmission", "clean_title", "ext_col", "int_col"], inplace=True)
+    df.drop(columns=["engine", "transmission", "clean_title", "ext_col", "int_col", "model"], inplace=True)
     return df
 
 def _log_transform_input_data(df: pd.DataFrame, vars: list = ["price", "engine_hp"]) -> pd.DataFrame:
