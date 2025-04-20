@@ -12,7 +12,8 @@ from utils import (_load_input_data,
                    _custom_transform_data,
                    _log_transform_input_data,
                    _onehot_encode_input_data,
-                   _impute_missing_data)
+                   _impute_missing_data,
+                   _exp1m_rmse)
 
 from xgboost import XGBRegressor
 from sklearn.tree import DecisionTreeRegressor
@@ -37,6 +38,7 @@ from sklearn.metrics import (mean_squared_error,
                              mean_absolute_error,
                              r2_score,
                              explained_variance_score)
+from autogluon.core.metrics import make_scorer
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 pd.set_option('display.max_columns', None)
@@ -62,22 +64,6 @@ class PricePredictionPipeline:
         self.intermediate_dir = intermediate_dir
         self.tables_dir = tables_dir
         self.plot_dir = plot_dir
-        # Initialize the models
-        self.models = {
-            "Nearest Neighbors": KNeighborsRegressor(3),
-            #"Linear SVM": SVR(kernel="linear", C=0.025),
-            #"RBF SVM": SVR(gamma=2, C=1),
-            "Decision Tree": DecisionTreeRegressor(max_depth=5, random_state=42),
-            "Random Forest": RandomForestRegressor(max_depth=5, n_estimators=10, max_features=1, random_state=42),
-            "XGBoost GBLinear": XGBRegressor(booster='gblinear', eval_metric='rmse', random_state=42),
-            "XGBoost GBTrees": XGBRegressor(booster='gbtree', eval_metric='rmse', random_state=42),
-            "LGBM": LGBMRegressor(random_state=42),
-            "AdaBoost": AdaBoostRegressor(random_state=42),
-            "Bagging": BaggingRegressor(random_state=42),
-            "Extra Trees": ExtraTreesRegressor(random_state=42),
-            "Gradient Boosting": GradientBoostingRegressor(random_state=42),
-            "Hist Gradient Boosting": HistGradientBoostingRegressor(random_state=42),
-        }
         # Create the pipeline
         self.pipeline = Pipeline([
             ('load', FunctionTransformer(func=_load_input_data)),
@@ -87,12 +73,21 @@ class PricePredictionPipeline:
         ])
         # Set the scaler
         self.scaler = StandardScaler()
-        # Set the k-fold cross-validation
-        self.kf = KFold(n_splits=5, shuffle=True, random_state=42)
         # Set the target variable
         self.target_var = target_var
-        # Set the dataframes for predictions
-        self.predictions = {}
+        # Specify autogluon path
+        self.autogluon_path = self.intermediate_dir / "autogluon_output" 
+        # Specify custom evaluation metric
+        self.eval_metric = make_scorer(
+            name='exp1m_rmse',
+            score_func=_exp1m_rmse,
+            greater_is_better=True
+        )
+        # Initialize the predictor
+        self.predictor = TabularPredictor(label=self.target_var, 
+                                          eval_metric=self.eval_metric,
+                                          problem_type="regression",
+                                          path=self.autogluon_path)
 
     def load_train_test(
         self, 
@@ -212,89 +207,56 @@ class PricePredictionPipeline:
 
     def train_models(self):
         """Train the models on the training data using AutoGluon."""
-        
         # First we assemble the df using self.x_train & self.y_train
         train_data = self.x_train.copy()
         train_data[self.target_var] = self.y_train
-
-        # Specify output path
-        output_path = self.intermediate_dir / "autogluon_output" 
-
-        self.predictor = TabularPredictor(label=self.target_var, 
-                                          eval_metric="rmse",
-                                          problem_type="regression",
-                                          path=output_path)
         self.predictor.fit(train_data)
-                                        
-    def train_and_evaluate_models(self):
-        results = {}
-        self.feature_importances = {}
+        print(f"✅ Models trained and saved to: {self.autogluon_path}")
+    
+    def load_models(self):
+        """Load a previously trained AutoGluon predictor."""
+        self.predictor = TabularPredictor.load(self.autogluon_path)
+        print(f"📂 Predictor loaded from: {self.autogluon_path}")
 
-        for name, model in self.models.items():
-            print(f"\nTraining {name}...")
-            # Perform k-fold cross-validation
-            #cv_results = cross_val_score(model, self.x_train, self.y_train, cv=self.kf, scoring='neg_mean_squared_error')
-            #print(f"Cross-validation MSE: {np.mean(cv_results):.4f} ± {np.std(cv_results):.4f}")
-            # Fit the model on the training data (without cross-validation)
-            model.fit(self.x_train, self.y_train)
-            y_pred = model.predict(self.x_val)
-            # Compute MSE
-            mse = mean_squared_error(self.y_val, y_pred)
-            # Compute MAE
-            mae = mean_absolute_error(self.y_val, y_pred)
-            # Compute explained variance
-            evs = explained_variance_score(self.y_val, y_pred)
-            # RMSE on the original values
-            rmse = np.sqrt(mean_squared_error(np.expm1(self.y_val), np.expm1(y_pred)))
-            results[name] = {"MSE": mse,
-                             "RMSE": rmse,
-                             "MAE": mae,
-                             "Explained Variance": evs}
-                             #"CV MSE": np.mean(cv_results),
-                             #"CV Std": np.std(cv_results)}
-            # Save predictions
-            self.predictions[name] = y_pred
-            # Save model
-            self.models[name] = model
+    def evaluate_model(self, model_name: str):
+        """Evaluate the models on the validation data."""
+        # First we assemble the df using self.x_val & self.y_val
+        val_data = self.x_val.copy()
+        val_data[self.target_var] = self.y_val
 
-            if hasattr(model, "feature_importances_"):
-                importances = model.feature_importances_
-                self.feature_importances[name] = pd.Series(importances, index=self.x_train.columns).sort_values(ascending=False)
+        # Evaluate the models
+        results = self.predictor.evaluate(val_data, 
+                                          silent=True, 
+                                          model=model_name,
+                                          extra_metrics=["r2", "mae", "mse"])
         return results
 
-    def save_true_vs_predicted_table(self, model_name: str, predictions: np.ndarray):
-        now = datetime.now().strftime("%d_%M%S")
- 
-        pred_df = pd.DataFrame({
-            "true_transport": self.y_val.values,
-            "predicted_transport": predictions,
-        }, index=self.sample_ids)
+    def save_results_and_plot_best_model(self):
+        """Save the results and plot the best model."""
+        # First we assemble the df using self.x_val & self.y_val
+        val_data = self.x_val.copy()
+        val_data[self.target_var] = self.y_val
 
-        csv_path = self.tables_dir / f"true_vs_predicted_{model_name}_{now}.csv"
-        pred_df.to_csv(csv_path, index=True)
-        print(f"📄 Prediction table saved to: {csv_path}")
-
-    def save_results_and_plot_best_model(self, results: dict):
-        now = datetime.now().strftime("%d_%M%S")
-        results_df = pd.DataFrame(results).T
-
+        # Get the results from the predictor
+        results_df = self.predictor.leaderboard(val_data, silent=True, extra_metrics=["r2", "mae", "mse"])
+    
         # Save CSV of metrics
-        csv_path = self.tables_dir / f"model_metrics_{now}.csv"
+        csv_path = self.tables_dir / f"model_metrics_{self._get_timestamp()}.csv"
         results_df.to_csv(csv_path)
         print(f"\n✅ Results saved to: {csv_path}")
 
-        # Identify best model by lowest MSE
-        best_model = min(results.items(), key=lambda x: x[1]["RMSE"])[0]
-        print(f"\n🏆 Best model: {best_model}")
+        # Identify best model by lowest score
+        self.best_model = results_df.iloc[results_df["score_val"].idxmin()]["model"]
+        print(f"\n🏆 Best model: {self.best_model}")
 
-        # Save true vs predicted table
-        self.save_true_vs_predicted_table(best_model, self.predictions[best_model])
+        # Get the predictions from the best model
+        predictions = self.predictor.predict(self.x_val, model=self.best_model)
 
         # Plot scatter plot of true vs predicted values
         # Fit regression line through scatter
         plt.figure(figsize=(10, 6))
-        sns.regplot(x=self.y_val, y=self.predictions[best_model], scatter=True, color='red')
-        plt.title(f"True vs Predicted Values - {best_model}")
+        sns.regplot(x=self.y_val, y=predictions, scatter=True, color='red')
+        plt.title(f"True vs Predicted Values - {self.best_model}")
         plt.xlabel("True Values")
         plt.ylabel("Predicted Values")
         plt.plot([self.y_val.min(), self.y_val.max()], [self.y_val.min(), self.y_val.max()], 'k--', lw=2)
@@ -302,45 +264,46 @@ class PricePredictionPipeline:
         plt.ylim(self.y_val.min(), self.y_val.max())
         plt.grid()
         plt.tight_layout()
-        plt.savefig(self.plot_dir / f"true_vs_predicted_{best_model}_{now}.png")
+        plt.savefig(self.plot_dir / f"true_vs_predicted_{self.best_model}_{self._get_timestamp()}.png")
 
-    def grid_search_best_model(self, model_name: str):
-        # Define the parameter grid for the model
-        param_grid = {
-            'n_estimators': list(range(50, 200, 50)),
-            'max_depth': list(range(3, 10)),
-            'learning_rate': list(np.arange(0.01, 0.1, 0.01)),
-        }
-        # Create the model
-        model = self.models[model_name]
-        # Create the grid search object
-        grid_search = GridSearchCV(model, param_grid, cv=self.kf, scoring='neg_mean_squared_error', n_jobs=-1)
-        # Fit the grid search
-        grid_search.fit(self.x_train, self.y_train)
-        # Get the best parameters
-        best_params = grid_search.best_params_
-        # Get the best score
-        best_score = grid_search.best_score_
-        # Get the best model
-        best_model = grid_search.best_estimator_
-        # Print the best parameters and score
-        print(f"Best parameters: {best_params}")
-        print(f"Best score: {best_score:.4f}")   
-        return best_model
-    
-    def make_predictions(self, model):
-        # Make predictions on the test data
-        y_pred = model.predict(self.x_test)
-        # Save predictions to CSV
-        pred_df = pd.DataFrame({
-            "id": self.test_df.index,
-            "price": np.expm1(y_pred)
-        })
         # Save the predictions to a CSV file
-        pred_csv_path = self.tables_dir / f"predictions_test_set.csv"
-        pred_df.to_csv(pred_csv_path, index=False)
-        print(f"Predictions saved to: {pred_csv_path}")
-        return pred_df
+        self.save_predictions(model_name=self.best_model, data_split="val")
+    
+    def _get_timestamp(self):
+        return datetime.now().strftime("%d_%M%S")
+    
+    def save_predictions(self, model_name: str, data_split: str = "val"):
+        """
+        Make predictions and save them to a CSV file.
+
+        Parameters:
+        - model_name: str, name of the model to use for prediction
+        - data_split: str, one of ["val", "test"]
+        """
+        assert data_split in ["val", "test"], "data_split must be 'val' or 'test'"
+
+        if data_split == "val":
+            X = self.x_val
+            predictions = self.predictor.predict(X, model=model_name)
+            df = pd.DataFrame({
+                "true_transport": self.y_val.values,
+                "predicted_transport": predictions,
+            }, index=self.sample_ids)
+            filename = f"true_vs_predicted_{model_name}_{self._get_timestamp()}.csv"
+
+        else:  # test
+            X = self.x_test
+            predictions = self.predictor.predict(X, model=model_name)
+            df = pd.DataFrame({
+                "price": np.expm1(predictions)
+            }, index=self.x_test.index)
+            filename = "predictions_test_set.csv"
+
+        csv_path = self.tables_dir / filename
+        df.to_csv(csv_path, index=(data_split == "val"))
+        print(f"📄 Predictions saved to: {csv_path}")
+        return df
+
 
 
 if __name__ == "__main__":
@@ -379,20 +342,9 @@ if __name__ == "__main__":
         feature_selection=False
     )
     prediction_pipeline.train_test_split()
-    prediction_pipeline.train_models()
-    """
-    # Train and evaluate models
-    results = prediction_pipeline.train_and_evaluate_models()
-    for model_name, metrics in results.items():
-        print(f"\nModel: {model_name}")
-        for metric, value in metrics.items():
-            print(f"{metric}: {value:.4f}")
-    prediction_pipeline.save_results_and_plot_best_model(results)
-    
-    # Choose the best model based on the results (AUROC and perform grid search)
-    #grid_search_best_model = prediction_pipeline.grid_search_best_model("XGBoost GBTrees")
-    # Make predictions on the test data
-    grid_search_best_model = prediction_pipeline.models["XGBoost GBTrees"]
-    predictions = prediction_pipeline.make_predictions(grid_search_best_model)
-    print(predictions.head())
-    """
+    #prediction_pipeline.train_models()
+    prediction_pipeline.load_models()
+    prediction_pipeline.save_results_and_plot_best_model()
+
+    best_model = prediction_pipeline.best_model
+    prediction_pipeline.save_predictions(model_name=best_model, data_split="test")

@@ -7,6 +7,7 @@ from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import SimpleImputer, KNNImputer, IterativeImputer
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
+from sklearn.metrics import mean_squared_error
 
 def _load_input_data(csv_path: Path) -> pd.DataFrame:
     """
@@ -194,3 +195,9 @@ def _impute_missing_data(
     # Add the target variable back to the DataFrame
     df_imputed[target_var] = target
     return transformer, df_imputed
+
+def _exp1m_rmse(y_true, y_pred):
+    y_true_exp = np.expm1(y_true)
+    y_pred_exp = np.expm1(y_pred)
+    rmse = np.sqrt(mean_squared_error(y_true_exp, y_pred_exp))
+    return rmse
