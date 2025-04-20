@@ -182,7 +182,7 @@ class PricePredictionPipeline:
     def train_test_split(self):
         # Perform train-test split
         self.x_train, self.x_val, self.y_train, self.y_val = train_test_split(
-            self.x_train, self.y_train, test_size=0.2, random_state=42
+            self.x_train, self.y_train, test_size=0.1, random_state=42
         )
         self.sample_ids = self.x_val.index.tolist()
         print(f"Train shape: {self.x_train.shape}, Validation shape: {self.x_val.shape}")
@@ -210,7 +210,12 @@ class PricePredictionPipeline:
         # First we assemble the df using self.x_train & self.y_train
         train_data = self.x_train.copy()
         train_data[self.target_var] = self.y_train
-        self.predictor.fit(train_data)
+        self.predictor.fit(train_data,
+                           num_bag_folds = 10,
+                           num_bag_sets = 2,
+                           keep_only_best = True,
+                           presets="best_quality",
+                           time_limit=1800,)
         print(f"✅ Models trained and saved to: {self.autogluon_path}")
     
     def load_models(self):
@@ -246,7 +251,7 @@ class PricePredictionPipeline:
         print(f"\n✅ Results saved to: {csv_path}")
 
         # Identify best model by lowest score
-        self.best_model = results_df.iloc[results_df["score_val"].idxmin()]["model"]
+        self.best_model = results_df.iloc[results_df["score_test"].idxmax()]["model"]
         print(f"\n🏆 Best model: {self.best_model}")
 
         # Get the predictions from the best model
@@ -304,8 +309,6 @@ class PricePredictionPipeline:
         print(f"📄 Predictions saved to: {csv_path}")
         return df
 
-
-
 if __name__ == "__main__":
     base_path = Path(__file__).parents[1]
     # Get current date & format to YYYY-MM-DD
@@ -334,7 +337,7 @@ if __name__ == "__main__":
     prediction_pipeline.load_train_test(train_csv_path, test_csv_path)
     prediction_pipeline.prepare_data(
         one_hot_encode=True,
-        normalize=True,
+        normalize=False,
         strategy={
             "categorical": "simple",
             "numerical": "iterative"
@@ -342,7 +345,7 @@ if __name__ == "__main__":
         feature_selection=False
     )
     prediction_pipeline.train_test_split()
-    #prediction_pipeline.train_models()
+    prediction_pipeline.train_models()
     prediction_pipeline.load_models()
     prediction_pipeline.save_results_and_plot_best_model()
 

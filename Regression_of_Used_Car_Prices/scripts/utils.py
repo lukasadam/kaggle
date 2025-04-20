@@ -27,7 +27,7 @@ def _custom_transform_data(df: pd.DataFrame) -> pd.DataFrame:
     :param df: DataFrame to be transformed.
     
     :return: Transformed DataFrame."""
-    df["fuel_type"] = df["fuel_type"].str.replace("–", "U")
+    df["fuel_type"] = df["fuel_type"].replace({'–':'not supported'})
     # Format engine
     df["engine"] = df["engine"].str.replace("–", "U")
     # Format transmission
@@ -47,16 +47,15 @@ def _custom_transform_data(df: pd.DataFrame) -> pd.DataFrame:
     df["transmission_type"] = df["transmission_type"].fillna("U")
     # Extract transmission speed ( X-Speed ) from the transmission column
     df["transmission_speed"] = df["transmission"].str.extract(r'(\d+)\s*-Speed', expand=False)
-    # Convert the transmission speed to a float
-    df["transmission_speed"] = df["transmission_speed"].astype(float)
-    # Set all NaN values to 4 if transmission is either automatic or manual else 0
-    df["transmission_speed"] = df["transmission_speed"].fillna(4)
-    df["transmission_speed"] = df.apply(lambda x: 0 if x["transmission_type"] == "U" else x["transmission_speed"], axis=1)
+    # Convert the transmission speed to a categorical
+    df["transmission_speed"] = df["transmission_speed"].astype(object)
+    # Set all NaN values to 4 if transmission is either automatic or manual else -1
+    df["transmission_speed"] = df["transmission_speed"].fillna("U")
     # Extract engine liter ( X.XL ) from the engine column 
     df["engine_liter"] = df["engine"].str.extract(r'(\d+(?:\.\d+)?)\s*L', expand=False)
     # Convert the engine liter to a float
     df["engine_liter"] = df["engine_liter"].astype(float)
-    # Set all NaN values to 0
+    # Set all NaN values to U
     df["engine_liter"] = df["engine_liter"].fillna(0)
     # We do the same for HP
     df["engine_hp"] = df["engine"].str.extract(r'(\d+(?:\.\d+)?)\s*HP', expand=False)
@@ -69,10 +68,10 @@ def _custom_transform_data(df: pd.DataFrame) -> pd.DataFrame:
     df["engine_gdi"] = df["engine_gdi"].fillna("U")
     # Extract number of cylinders
     df["engine_cylinders"] = df["engine"].str.extract(r'(\d+)\s*Cyl', expand=False)
-    # Convert the engine cylinders to a float
-    df["engine_cylinders"] = df["engine_cylinders"].astype(float)
-    # Set all NaN values to 0
-    df["engine_cylinders"] = df["engine_cylinders"].fillna(0)
+    # Convert the engine cylinders to a categorical
+    df["engine_cylinders"] = df["engine_cylinders"].astype(object)
+    # Set all NaN values to U
+    df["engine_cylinders"] = df["engine_cylinders"].fillna("U")
     # Map accident history
     accident_map = {
         "None reported": False,
@@ -85,12 +84,11 @@ def _custom_transform_data(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(by="model_year")
     # Convert the model year to a numeric value
     df["model_year"] = df["model_year"].dt.year
-    #
     # Drop columns
     df.drop(columns=["engine", "transmission", "clean_title", "ext_col", "int_col", "model"], inplace=True)
     return df
 
-def _log_transform_input_data(df: pd.DataFrame, vars: list = ["price", "engine_hp"]) -> pd.DataFrame:
+def _log_transform_input_data(df: pd.DataFrame, vars: list = ["milage", "price", "engine_hp"]) -> pd.DataFrame:
     """
     Log transform the specified variables in the DataFrame.
 
@@ -126,7 +124,7 @@ def _impute_missing_data(
     num_feat: list,
     strategy: dict = {
         "categorical": "simple",
-        "numerical": "iterative"
+        "numerical": "knn"
     }
 ) -> pd.DataFrame:
     """Impute missing values in the DataFrame.
@@ -200,4 +198,4 @@ def _exp1m_rmse(y_true, y_pred):
     y_true_exp = np.expm1(y_true)
     y_pred_exp = np.expm1(y_pred)
     rmse = np.sqrt(mean_squared_error(y_true_exp, y_pred_exp))
-    return rmse
+    return -rmse
