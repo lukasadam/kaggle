@@ -184,3 +184,6 @@ data/
 AutogluonModels/
 # Remove catboost_info
 catboost_info/
+# Remove bin & png
+bin
+*.png

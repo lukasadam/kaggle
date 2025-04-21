@@ -29,5 +29,3 @@ class SVRModel(AbstractModel):
     def _predict(self, X, **kwargs):
         X_transformed = self.pipeline.transform(X)
         return self.model.predict(X_transformed)
-
-
