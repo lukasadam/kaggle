@@ -315,7 +315,7 @@ if __name__ == "__main__":
     now = datetime.now()
     current_date = now.strftime("%Y_%m_%d")
     # Set the path to the data directory
-    data_dir = base_path / "data"
+    data_dir = base_path / "data" / "playground-series-s4e9"
     results_dir = base_path / "results"
     intermediate_dir = results_dir / "intermediate" / current_date
     tables_dir = results_dir / "tables" / current_date

@@ -24,7 +24,7 @@ current_date = now.strftime("%Y_%m_%d")
 # Set the base path to the project directory
 base_path = Path(__file__).parents[1]
 # Set the path to the data directory
-data_dir = base_path / "data"
+data_dir = base_path / "data" / "playground-series-s4e9"
 results_dir = base_path / "results"
 intermediate_dir = results_dir / "intermediate" / current_date
 tables_dir = results_dir / "tables" / current_date
